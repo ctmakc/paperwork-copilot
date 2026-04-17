@@ -620,10 +620,22 @@ button {
   max-width: none;
 }
 
+.office-mobile-page {
+  gap: 16px;
+}
+
+.office-mobile-header h1 {
+  max-width: none;
+}
+
 .field-job-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
+}
+
+.office-job-strip {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
 }
 
 .field-job-chip {
@@ -657,6 +669,10 @@ button {
   padding-bottom: 18px;
 }
 
+.office-mobile-hero {
+  border: 1px solid rgba(76, 97, 108, 0.12);
+}
+
 .technician-handoff-pill {
   margin-top: 12px;
 }
@@ -668,6 +684,18 @@ button {
 
 .technician-note-textarea {
   min-height: 220px;
+}
+
+.office-mobile-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.office-action-card {
+  min-height: 104px;
+  background: var(--surface-lowest);
+  box-shadow: none;
 }
 
 .editor-header {
@@ -1026,6 +1054,10 @@ button {
 
   .field-job-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .office-mobile-actions {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
   }
 
   .technician-note-textarea {

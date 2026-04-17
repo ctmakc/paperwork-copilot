@@ -219,6 +219,7 @@ function App() {
   const activeMessageStatuses = activeJob?.messageStatuses ?? INITIAL_MESSAGE_STATUSES;
   const activeTechnicianNote = activeJob?.technicianNote ?? "";
   const isTechnicianMobileMode = isMobileViewport && mobileMode === "tech";
+  const isOfficeMobileMode = isMobileViewport && mobileMode === "office";
   const workflowCounts = React.useMemo(() => ({
     total: state.jobs.length,
     urgent: state.jobs.filter((job) => job.status === "urgent").length,
@@ -249,6 +250,9 @@ function App() {
       const currentJob = state.jobs.find((job) => job.id === currentJobId);
       if (mobileMode === "tech" && (!currentJob || getWorkflowStage(currentJob).id === "sent")) {
         return getTechnicianLeadJob(state.jobs)?.id ?? currentJobId;
+      }
+      if (mobileMode === "office" && (!currentJob || !isOfficeQueueJob(currentJob))) {
+        return getOfficeLeadJob(state.jobs)?.id ?? currentJobId;
       }
       return currentJobId;
     });
@@ -494,6 +498,23 @@ function App() {
         />
       );
     }
+    if (isOfficeMobileMode) {
+      return (
+        <OfficeMobileScreen
+          jobs={state.jobs}
+          job={activeJob}
+          invoiceDraft={activeInvoiceDraft}
+          onSelectJob={setActiveJobId}
+          onOpenField={() => setMobileMode("tech")}
+          onAdvanceJob={() => advanceJobProcess(activeJob.id)}
+          onAcknowledgeHandoff={() => acknowledgeFieldHandoff(activeJob.id)}
+          onDraftInvoiceFromHandoff={() => markInvoiceDraftedFromHandoff(activeJob.id)}
+          onOpenEstimate={() => setScreen("estimate")}
+          onOpenInvoice={() => { setPreviewMode("invoice"); setScreen("invoice"); }}
+          onOpenMessages={() => setScreen("messages")}
+        />
+      );
+    }
     switch (screen) {
       case "dashboard":
         return <DashboardScreen jobs={state.jobs} counts={workflowCounts} onAdvanceJob={advanceJobProcess} onAcknowledgeHandoff={acknowledgeFieldHandoff} onDraftInvoiceFromHandoff={markInvoiceDraftedFromHandoff} onOpenIntake={() => setScreen("new-intake")} onOpenJob={openJob} />;
@@ -603,6 +624,7 @@ function App() {
     screen,
     state,
     isTechnicianMobileMode,
+    isOfficeMobileMode,
     advanceEstimateStatus,
     advanceInvoiceStatus,
     advanceJobProcess,
@@ -653,7 +675,7 @@ function App() {
           />
         </aside>
       </div>
-      {!isTechnicianMobileMode ? <BottomNav current={screen} onNavigate={(next) => setScreen(next)} /> : null}
+      {!isTechnicianMobileMode && !isOfficeMobileMode ? <BottomNav current={screen} onNavigate={(next) => setScreen(next)} /> : null}
       {toast ? <div className="toast">{toast}</div> : null}
     </div>
   );
@@ -1462,6 +1484,108 @@ function TechnicianMobileScreen({ jobs, job, noteValue, onSelectJob, onOpenOffic
   );
 }
 
+function OfficeMobileScreen({ jobs, job, invoiceDraft, onSelectJob, onOpenField, onAdvanceJob, onAcknowledgeHandoff, onDraftInvoiceFromHandoff, onOpenEstimate, onOpenInvoice, onOpenMessages }) {
+  const officeJobs = jobs.filter((item) => {
+    const stage = getWorkflowStage(item).id;
+    return stage === "approval" || stage === "invoicing" || stage === "sent";
+  });
+  const selectedJob = officeJobs.find((item) => item.id === job.id) ?? officeJobs[0] ?? job;
+  const handoffAction = getNextFieldHandoffAction(selectedJob);
+  const quickActions = [
+    { id: "estimate", label: "Estimate", hint: formatStatusLabel(selectedJob.estimateStatus), onClick: onOpenEstimate },
+    { id: "invoice", label: "Invoice", hint: formatStatusLabel(invoiceDraft.invoiceStatus), onClick: onOpenInvoice },
+    { id: "messages", label: "Message", hint: formatStatusLabel(selectedJob.messageStatuses?.invoice), onClick: onOpenMessages }
+  ];
+
+  return (
+    <section className="stack-page office-mobile-page">
+      <div className="page-header office-mobile-header">
+        <p className="page-kicker">Office mode</p>
+        <h1>Compact office queue</h1>
+        <p className="page-subtitle">Only approval, handoff, invoice, and send. No full desktop layer on the first mobile screen.</p>
+      </div>
+
+      <div className="field-job-strip office-job-strip">
+        {officeJobs.map((item) => (
+          <button
+            key={item.id}
+            className={`field-job-chip ${item.id === selectedJob.id ? "field-job-chip-active" : ""}`}
+            onClick={() => onSelectJob(item.id)}
+          >
+            <strong>{item.title}</strong>
+            <span>{getWorkflowStage(item).label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="card white-card office-mobile-hero">
+        <div className="card-topline">
+          <Chip tone="warning" icon="apartment">Office focus</Chip>
+          <StatusPill tone={getWorkflowStage(selectedJob).tone}>{getWorkflowStage(selectedJob).label}</StatusPill>
+        </div>
+        <h2>{selectedJob.title}</h2>
+        <p className="muted-line">
+          <span className="material-symbols-outlined">person</span>
+          {selectedJob.customer}
+        </p>
+        <div className="focus-grid">
+          <div className="focus-pill">
+            <span className="field-label">Blocking</span>
+            <strong>{getJobBlocker(selectedJob)}</strong>
+          </div>
+          <div className="focus-pill">
+            <span className="field-label">Field handoff</span>
+            <strong>{getFieldHandoffState(selectedJob).label}</strong>
+          </div>
+        </div>
+        <button className="primary-button" onClick={onAdvanceJob}>
+          <span className="material-symbols-outlined">{getNextJobTransition(selectedJob).icon}</span>
+          {getNextJobTransition(selectedJob).label}
+        </button>
+        {handoffAction ? (
+          <button className="secondary-button" onClick={() => runFieldHandoffAction(selectedJob, onAcknowledgeHandoff, onDraftInvoiceFromHandoff)}>
+            <span className="material-symbols-outlined">{handoffAction.icon}</span>
+            {handoffAction.label}
+          </button>
+        ) : null}
+      </div>
+
+      <div className="card soft-card">
+        <div className="card-topline">
+          <div>
+            <label className="field-label">Compact actions</label>
+            <h2>Open only the slice you need</h2>
+          </div>
+          <button className="link-button" onClick={onOpenField}>Open field view</button>
+        </div>
+        <div className="office-mobile-actions">
+          {quickActions.map((item) => (
+            <button key={item.id} className="mini-card office-action-card" onClick={item.onClick}>
+              <span className="field-label">{item.label}</span>
+              <strong>{item.hint}</strong>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card white-card">
+        <div className="card-topline">
+          <div>
+            <label className="field-label">Recent activity</label>
+            <h2>{selectedJob.title}</h2>
+          </div>
+          <StatusPill tone={getFieldHandoffState(selectedJob).tone}>{getFieldHandoffState(selectedJob).label}</StatusPill>
+        </div>
+        <div className="mini-list">
+          {(selectedJob.activityLog ?? []).slice(0, 4).map((entry) => (
+            <div key={`${entry.ts}-${entry.text}`} className="mini-list-item">{entry.ts} · {entry.text}</div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function BotMockScreen({ job, onJumpToAnalysis }) {
   return (
     <section className="stack-page">
@@ -2254,6 +2378,15 @@ function getTechnicianLeadJob(jobs) {
     ?? getLeadJobForStage(jobs, "invoicing")
     ?? getLeadJobForStage(jobs, "approval")
     ?? jobs[0];
+}
+
+function isOfficeQueueJob(job) {
+  const stage = getWorkflowStage(job).id;
+  return stage === "approval" || stage === "invoicing" || stage === "sent";
+}
+
+function getOfficeLeadJob(jobs) {
+  return jobs.find((job) => isOfficeQueueJob(job)) ?? jobs[0];
 }
 
 function getFieldHandoffState(job) {
