@@ -187,6 +187,12 @@ const INITIAL_MESSAGE_STATUSES = {
   estimate: "draft",
   invoice: "draft"
 };
+const HANDOFF_STATES = [
+  { id: "idle", label: "Not sent", tone: "soft" },
+  { id: "sent", label: "Field sent", tone: "urgent" },
+  { id: "seen", label: "Office seen", tone: "soft" },
+  { id: "drafted", label: "Invoice drafted", tone: "ready" }
+];
 const WORKFLOW_STAGES = [
   { id: "intake", label: "Intake", tone: "urgent" },
   { id: "approval", label: "Approval", tone: "soft" },
@@ -407,6 +413,8 @@ function App() {
         makeActivityEntry("Invoice draft regenerated from technician note."),
         ...(job.activityLog ?? [])
       ].slice(0, 8),
+      handoffStatus: "drafted",
+      nextAction: "Review invoice before send",
       invoiceDraft: nextDraft,
       messageDrafts: {
         ...job.messageDrafts,
@@ -425,27 +433,35 @@ function App() {
   const sendFieldNoteToOffice = React.useCallback((jobId) => {
     updateJob(jobId, (job) => {
       const normalizedNote = job.technicianNote?.trim() || "Field closeout sent to office. Full note still pending.";
-      const nextDraft = buildInvoiceFromTechnicianNote(normalizedNote, job);
       return appendActivityEntry({
         ...job,
         waitingOn: "office",
-        nextAction: "Office reviewing field closeout",
+        handoffStatus: "sent",
+        nextAction: "Office needs to review field handoff",
         technicianNote: normalizedNote,
-        invoiceDraft: {
-          ...nextDraft,
-          invoiceStatus: "draft"
-        },
-        messageDrafts: {
-          ...job.messageDrafts,
-          invoice: buildInvoiceMessage(nextDraft)
-        },
-        messageStatuses: {
-          ...job.messageStatuses,
-          invoice: "draft"
-        }
       }, "Field note sent to office for invoice cleanup.");
     });
     notify("Field note sent to office.");
+  }, [notify, updateJob]);
+
+  const acknowledgeFieldHandoff = React.useCallback((jobId) => {
+    updateJob(jobId, (job) => appendActivityEntry({
+      ...job,
+      waitingOn: "office",
+      handoffStatus: "seen",
+      nextAction: "Draft invoice from field note"
+    }, "Office acknowledged the field handoff."));
+    notify("Office marked the field handoff as seen.");
+  }, [notify, updateJob]);
+
+  const markInvoiceDraftedFromHandoff = React.useCallback((jobId) => {
+    updateJob(jobId, (job) => appendActivityEntry({
+      ...job,
+      waitingOn: "office",
+      handoffStatus: "drafted",
+      nextAction: "Review invoice before send"
+    }, "Invoice draft prepared from the field handoff."));
+    notify("Invoice draft marked ready from handoff.");
   }, [notify, updateJob]);
 
   const copyText = React.useCallback(async (value, label) => {
@@ -480,7 +496,7 @@ function App() {
     }
     switch (screen) {
       case "dashboard":
-        return <DashboardScreen jobs={state.jobs} counts={workflowCounts} onAdvanceJob={advanceJobProcess} onOpenIntake={() => setScreen("new-intake")} onOpenJob={openJob} />;
+        return <DashboardScreen jobs={state.jobs} counts={workflowCounts} onAdvanceJob={advanceJobProcess} onAcknowledgeHandoff={acknowledgeFieldHandoff} onDraftInvoiceFromHandoff={markInvoiceDraftedFromHandoff} onOpenIntake={() => setScreen("new-intake")} onOpenJob={openJob} />;
       case "jobs":
         return (
           <JobsScreen
@@ -520,6 +536,7 @@ function App() {
         return (
           <InvoiceDraftScreen
             draft={activeInvoiceDraft}
+            handoffState={getFieldHandoffState(activeJob)}
             onMessage={() => setScreen("messages")}
             onPreview={() => { setPreviewMode("invoice"); setScreen("export-preview"); }}
             onAdvanceStatus={advanceInvoiceStatus}
@@ -589,8 +606,10 @@ function App() {
     advanceEstimateStatus,
     advanceInvoiceStatus,
     advanceJobProcess,
+    acknowledgeFieldHandoff,
     appendTechnicianNoteChip,
     advanceMessageStatus,
+    markInvoiceDraftedFromHandoff,
     sendFieldNoteToOffice,
     updateEstimateField,
     updateIntakeForm,
@@ -625,6 +644,8 @@ function App() {
             invoiceDraft={activeInvoiceDraft}
             onOpenJob={openJob}
             onAdvanceJob={() => advanceJobProcess(activeJob.id)}
+            onAcknowledgeHandoff={() => acknowledgeFieldHandoff(activeJob.id)}
+            onDraftInvoiceFromHandoff={() => markInvoiceDraftedFromHandoff(activeJob.id)}
             onOpenEstimate={() => setScreen("estimate")}
             onOpenInvoice={() => { setPreviewMode("invoice"); setScreen("invoice"); }}
             onOpenMessages={() => setScreen("messages")}
@@ -664,7 +685,7 @@ function TopBar({ onReset, isMobileViewport, mobileMode, onMobileModeChange }) {
   );
 }
 
-function DashboardScreen({ jobs, counts, onAdvanceJob, onOpenIntake, onOpenJob }) {
+function DashboardScreen({ jobs, counts, onAdvanceJob, onAcknowledgeHandoff, onDraftInvoiceFromHandoff, onOpenIntake, onOpenJob }) {
   const urgentJob = jobs.find((job) => getWorkflowStage(job).id === "intake") ?? jobs[0];
   const approvalJob = jobs.find((job) => getWorkflowStage(job).id === "approval") ?? jobs[1] ?? jobs[0];
   const fieldworkJob = jobs.find((job) => getWorkflowStage(job).id === "fieldwork") ?? jobs[2] ?? jobs[0];
@@ -720,6 +741,10 @@ function DashboardScreen({ jobs, counts, onAdvanceJob, onOpenIntake, onOpenJob }
             <span className="field-label">Next tap</span>
             <strong>{getPrimaryActionLabel(nowJob)}</strong>
           </div>
+          <div className="focus-pill">
+            <span className="field-label">Field handoff</span>
+            <strong>{getFieldHandoffState(nowJob).label}</strong>
+          </div>
         </div>
         <button className="primary-button" onClick={() => onOpenJob(nowJob.id, getPrimaryScreenForJob(nowJob))}>
           <span className="material-symbols-outlined">assignment_turned_in</span>
@@ -729,6 +754,12 @@ function DashboardScreen({ jobs, counts, onAdvanceJob, onOpenIntake, onOpenJob }
           <span className="material-symbols-outlined">{getNextJobTransition(nowJob).icon}</span>
           {getNextJobTransition(nowJob).label}
         </button>
+        {getNextFieldHandoffAction(nowJob) ? (
+          <button className="secondary-button" onClick={() => runFieldHandoffAction(nowJob, onAcknowledgeHandoff, onDraftInvoiceFromHandoff)}>
+            <span className="material-symbols-outlined">{getNextFieldHandoffAction(nowJob).icon}</span>
+            {getNextFieldHandoffAction(nowJob).label}
+          </button>
+        ) : null}
       </div>
 
       <div className="card white-card">
@@ -797,7 +828,7 @@ function DashboardScreen({ jobs, counts, onAdvanceJob, onOpenIntake, onOpenJob }
           <StatusPill tone="soft">Latest 3</StatusPill>
         </div>
         <div className="mini-list">
-          {(nowJob.activityLog ?? []).slice(0, 3).map((entry) => (
+          {(nowJob.activityLog ?? []).slice(0, 4).map((entry) => (
             <div key={`${entry.ts}-${entry.text}`} className="mini-list-item">{entry.ts} · {entry.text}</div>
           ))}
         </div>
@@ -1115,7 +1146,7 @@ function EstimateDraftScreen({ job, onMessage, onPreview, onAdvanceStatus, onFie
   );
 }
 
-function InvoiceDraftScreen({ draft, onMessage, onPreview, onAdvanceStatus, onFieldChange, onLineItemsChange, onCopy }) {
+function InvoiceDraftScreen({ draft, handoffState, onMessage, onPreview, onAdvanceStatus, onFieldChange, onLineItemsChange, onCopy }) {
   const total = sumLineItems(draft.lineItems);
   const internalTotal = sumLineItems(draft.internalLineItems);
   return (
@@ -1154,6 +1185,7 @@ function InvoiceDraftScreen({ draft, onMessage, onPreview, onAdvanceStatus, onFi
           <DetailCard label="Technician" value={draft.technician} />
           <DetailCard label="Collection posture" value={draft.invoiceStatus === "sent" ? "Awaiting payment" : "Internal review"} />
         </div>
+        <DetailCard label="Field handoff" value={handoffState.label} />
         <DetailBlock label="Internal billing note" value={draft.internalOnlyNotes} />
         <div className="inline-action-row">
           <button className="secondary-button" onClick={onPreview}>Open preview</button>
@@ -1391,6 +1423,10 @@ function TechnicianMobileScreen({ jobs, job, noteValue, onSelectJob, onOpenOffic
         <label className="field-label">Blocker</label>
         <h2>{getJobBlocker(job)}</h2>
         <p className="body-copy">{job.nextAction}</p>
+        <div className="focus-pill technician-handoff-pill">
+          <span className="field-label">Office handoff</span>
+          <strong>{getFieldHandoffState(job).label}</strong>
+        </div>
       </div>
 
       <div className="card white-card">
@@ -1664,7 +1700,7 @@ function MoreScreen({ onTechNote, onBot, onInvoice }) {
   );
 }
 
-function DesktopSidebar({ jobs, job, counts, invoiceDraft, onOpenJob, onAdvanceJob, onOpenEstimate, onOpenInvoice, onOpenMessages, onOpenTechNote }) {
+function DesktopSidebar({ jobs, job, counts, invoiceDraft, onOpenJob, onAdvanceJob, onAcknowledgeHandoff, onDraftInvoiceFromHandoff, onOpenEstimate, onOpenInvoice, onOpenMessages, onOpenTechNote }) {
   return (
     <div className="sidebar-stack">
       <div className="card white-card sidebar-card">
@@ -1683,6 +1719,10 @@ function DesktopSidebar({ jobs, job, counts, invoiceDraft, onOpenJob, onAdvanceJ
           <div className="focus-pill">
             <span className="field-label">Do next</span>
             <strong>{getPrimaryActionLabel(job)}</strong>
+          </div>
+          <div className="focus-pill">
+            <span className="field-label">Field handoff</span>
+            <strong>{getFieldHandoffState(job).label}</strong>
           </div>
         </div>
       </div>
@@ -1714,6 +1754,11 @@ function DesktopSidebar({ jobs, job, counts, invoiceDraft, onOpenJob, onAdvanceJ
         <div className="sidebar-actions">
           <button className="primary-button" onClick={() => onOpenJob(job.id, getPrimaryScreenForJob(job))}>{getPrimaryActionLabel(job)}</button>
           <button className="secondary-button" onClick={onAdvanceJob}>{getNextJobTransition(job).label}</button>
+          {getNextFieldHandoffAction(job) ? (
+            <button className="secondary-button" onClick={() => runFieldHandoffAction(job, onAcknowledgeHandoff, onDraftInvoiceFromHandoff)}>
+              {getNextFieldHandoffAction(job).label}
+            </button>
+          ) : null}
           <button className="secondary-button" onClick={onOpenMessages}>Messages</button>
           <button className="secondary-button" onClick={onOpenInvoice}>Invoice</button>
         </div>
@@ -2001,6 +2046,7 @@ function buildJobFromIntake(parsed, intakeForm) {
     invoiceDraft,
     technicianNote: "",
     waitingOn: parsed.missingInfo.length ? "customer" : "office",
+    handoffStatus: "idle",
     activityLog: [
       makeActivityEntry("Intake converted into a structured paperwork job.")
     ],
@@ -2182,7 +2228,7 @@ function getWorkflowStage(job) {
   if (job.waitingOn === "field") {
     return WORKFLOW_STAGES[2];
   }
-  if (job.waitingOn === "office" && (job.technicianNote?.trim() || /invoice/i.test(job.nextAction) || job.invoiceDraft?.invoiceStatus === "approved")) {
+  if (job.waitingOn === "office" && (job.handoffStatus === "sent" || job.handoffStatus === "seen" || job.handoffStatus === "drafted" || job.technicianNote?.trim() || /invoice/i.test(job.nextAction) || job.invoiceDraft?.invoiceStatus === "approved")) {
     return WORKFLOW_STAGES[3];
   }
   if (job.waitingOn === "office" || job.estimateStatus === "draft" || job.estimateStatus === "approved") {
@@ -2210,6 +2256,30 @@ function getTechnicianLeadJob(jobs) {
     ?? jobs[0];
 }
 
+function getFieldHandoffState(job) {
+  return HANDOFF_STATES.find((item) => item.id === (job.handoffStatus ?? "idle")) ?? HANDOFF_STATES[0];
+}
+
+function getNextFieldHandoffAction(job) {
+  if (job.handoffStatus === "sent") {
+    return { id: "seen", label: "Mark office seen", icon: "visibility" };
+  }
+  if (job.handoffStatus === "seen" && job.invoiceDraft?.invoiceStatus === "draft") {
+    return { id: "drafted", label: "Mark invoice drafted", icon: "receipt_long" };
+  }
+  return null;
+}
+
+function runFieldHandoffAction(job, onAcknowledgeHandoff, onDraftInvoiceFromHandoff) {
+  const action = getNextFieldHandoffAction(job);
+  if (!action) return;
+  if (action.id === "seen") {
+    onAcknowledgeHandoff();
+    return;
+  }
+  onDraftInvoiceFromHandoff();
+}
+
 function getNextJobTransition(job) {
   const stage = getWorkflowStage(job).id;
   if (stage === "intake") {
@@ -2234,6 +2304,7 @@ function getNextJobTransition(job) {
         status: "ready",
         estimateStatus: current.estimateStatus === "draft" ? "approved" : current.estimateStatus,
         waitingOn: "field",
+        handoffStatus: "idle",
         nextAction: "Capture field completion note"
       })
     };
@@ -2246,6 +2317,7 @@ function getNextJobTransition(job) {
       apply: (current) => ({
         ...current,
         waitingOn: "office",
+        handoffStatus: current.handoffStatus === "idle" ? "seen" : current.handoffStatus,
         nextAction: "Review invoice before send"
       })
     };
@@ -2304,6 +2376,8 @@ function getJobBlocker(job) {
     return job.technicianNote?.trim() ? "Field note captured, invoice still not cleaned" : "Technician note still missing";
   }
   if (stage === "invoicing") {
+    if (job.handoffStatus === "sent") return "Office has not acknowledged the field handoff yet";
+    if (job.handoffStatus === "seen") return "Invoice draft still needs to be prepared from the field note";
     return job.invoiceDraft?.invoiceStatus === "approved" ? "Invoice is approved but not sent" : "Invoice still needs office review";
   }
   return "Nothing blocking send";
@@ -2314,7 +2388,7 @@ function getPrimaryActionLabel(job) {
   if (stage === "intake") return "Finish intake";
   if (stage === "approval") return "Review estimate";
   if (stage === "fieldwork") return "Close from field";
-  if (stage === "invoicing") return "Review invoice";
+  if (stage === "invoicing") return job.handoffStatus === "sent" ? "Review handoff" : "Review invoice";
   return "Open sent packet";
 }
 
@@ -2330,6 +2404,12 @@ function getJobOperatorSummary(job) {
     return `Work likely happened or is happening now. Capture the rough note fast and let office clean it later.`;
   }
   if (stage === "invoicing") {
+    if (job.handoffStatus === "sent") {
+      return `Field already handed this off. Office just needs to acknowledge it and keep the closeout moving.`;
+    }
+    if (job.handoffStatus === "seen") {
+      return `Office has seen the field note. Next move is turning that rough handoff into a clean invoice draft.`;
+    }
     return `The job is close enough to bill. Keep customer charges clear and leave internal closeout internal.`;
   }
   return `Paperwork is already out. Only reopen if the customer or office actually needs a change.`;
@@ -2366,6 +2446,7 @@ function normalizeState(input) {
       messageStatuses: { ...INITIAL_MESSAGE_STATUSES },
       technicianNote: "",
       waitingOn: inferWaitingOn(job, legacyMessageStatuses, legacyTechnicianNote, legacyInvoiceDraft),
+      handoffStatus: inferHandoffStatus(job, legacyTechnicianNote),
       activityLog: job.activityLog?.length ? job.activityLog : [makeActivityEntry("Loaded existing paperwork job.")],
       serviceWindow: "This week, scheduling pending",
       siteContact: `${job.customer ?? "Customer"} · phone pending`,
@@ -2409,6 +2490,17 @@ function inferWaitingOn(job, legacyMessageStatuses, legacyTechnicianNote, legacy
     return "customer";
   }
   return "office";
+}
+
+function inferHandoffStatus(job, legacyTechnicianNote) {
+  if (job.handoffStatus) return job.handoffStatus;
+  if (job.invoiceDraft?.invoiceStatus === "approved" || job.invoiceDraft?.invoiceStatus === "sent" || job.messageStatuses?.invoice === "sent") {
+    return "drafted";
+  }
+  if (job.technicianNote?.trim() || legacyTechnicianNote?.trim()) {
+    return "sent";
+  }
+  return "idle";
 }
 
 function useMediaQuery(query) {
